@@ -31,15 +31,20 @@ static struct cv *northcv;
 static struct cv *southcv;
 static struct cv *eastcv;
 static struct cv *westcv;
-static struct Car* EArray;
-static struct Car* WArray;
-static struct Car* NArray;
-static struct Car* SArray;
+static struct Car EArray[10];
+static struct Car WArray[10];
+static struct Car NArray[10];
+static struct Car SArray[10];
 static int ECount;
 static int WCount;
 static int NCount;
 static int SCount;
 static Direction trafficDirection;
+void add_array(Direction origin, struct Car currCar);
+void wait_at_intersection(void);
+void remove_array(Direction origin, Direction destination);
+bool no_cars_in_intersection(void);
+void change_direction(Direction trafficDirection);
 /* 
  * The simulation driver will call this function once before starting
  * the simulation
@@ -47,117 +52,32 @@ static Direction trafficDirection;
  * You can use it to initialize synchronization and other variables.
  * 
  */
-void
-intersection_sync_init(void)
-{
-  /* replace this default implementation with your own implementation */
-
-  criticalSectionLock= lock_create("intersectionLock");
-  if(criticalSectionLock == NULL){
-    panic("Could not create intersection Lock");
-  }
-  northcv = cv_create("North");
-  if(northcv == NULL){
-  panic("Could not create North Conditional Variable");
-  }
-  southcv = cv_create("South");
-  if(southcv == NULL){
-  panic("Could not create South Conditional Variable");
-  }
-  eastcv= cv_create("East");
-  if(eastcv == NULL){
-  panic("Could not create East Conditional Variable");
-  }
-  westcv = cv_create("West");
-  if(westcv == NULL){
-  panic("Could not create West Conditional Variable");
-  }
-  return;
-  NArray = kmalloc(10* sizeof(struct Car));
-  EArray = kmalloc(10* sizeof(struct Car));
-  WArray = kmalloc(10* sizeof(struct Car));
-  SArray = kmalloc(10* sizeof(struct Car));
-  NCount = 0;
-  ECount = 0;
-  WCount = 0;
-  SCount = 0;
-  trafficDirection = south;
+ bool no_cars_in_intersection(void){
+ bool noEast = ECount == 0;
+ bool noWest = WCount == 0;
+ bool noNorth = NCount == 0;
+ bool noSouth = SCount ==0;
+ if((noEast && noWest && noNorth) || (noEast && noWest && noSouth) || (noEast && noNorth && noSouth) || (noWest && noNorth && noSouth)){
+ return true;
 }
-
-
-/* 
- * The simulation driver will call this function once after
- * the simulation has finished
- *
- * You can use it to clean up any synchronization and other variables.
- *
- */
-void
-intersection_sync_cleanup(void)
-{
-  /* replace this default implementation with your own implementation */
-  KASSERT(criticalSectionLock != NULL);
-  KASSERT(northcv != NULL);
-  KASSERT(southcv != NULL);
-  KASSERT(eastcv != NULL);
-  KASSERT(westcv != NULL);
-  cv_destroy(northcv);
-  cv_destroy(southcv);
-  cv_destroy(eastcv);
-  cv_destroy(westcv);
-  lock_destroy(criticalSectionLock);
-  kfree(NArray);
-  kfree(WArray);
-  kfree(EArray);
-  kfree(SArray);
-}
-
-
-/*
- * The simulation driver will call this function each time a vehicle
- * tries to enter the intersection, before it enters.
- * This function should cause the calling simulation thread 
- * to block until it is OK for the vehicle to enter the intersection.
- *
- * parameters:
- *    * origin: the Direction from which the vehicle is arriving
- *    * destination: the Direction in which the vehicle is trying to go
- *
- * return value: none
- */
-
-void
-intersection_before_entry(Direction origin, Direction destination) 
-{
-  /* replace this default implementation with your own implementation */
-  KASSERT(northcv != NULL);
-  KASSERT(southcv != NULL);
-  KASSERT(eastcv != NULL);
-  KASSERT(westcv != NULL);
-  lock_acquire(criticalSectionLock);
-   struct Car currCar;
-   currCar.origin = origin;
-   currCar.destination = destination;
-   if(trafficDirection == south){
-   cv_wait(northcv,criticalSectionLock);
-   cv_wait(eastcv, criticalSectionLock);
-   cv_wait(westcv, criticalSectionLock);
-   }
-   else if(trafficDirection == north){
-   cv_wait(eastcv, criticalSectionLock);
-   cv_wait(westcv, criticalSectionLock);
-   cv_wait(southcv, criticalSectionLock);
-   }
-   else if(trafficDirection == east){
-   cv_wait(northcv, criticalSectionLock);
-   cv_wait(westcv, criticalSectionLock);
-   cv_wait(southcv, criticalSectionLock);
-   }
-   else{
-   cv_wait(eastcv, criticalSectionLock);
-   cv_wait(northcv, criticalSectionLock);
-   cv_wait(southcv, criticalSectionLock);
-   }
+return false;
+ }
+ void change_direction(Direction trafficDirection){
+ 
+	if(trafficDirection == south){
+	 trafficDirection = west;
+	}
+	else if(trafficDirection == north){
+	trafficDirection = east;
+	}
+	else if(trafficDirection == east){
+	trafficDirection = south;
+	}
+	else{
+	trafficDirection = north;
+	}
+ }
+ void add_array(Direction origin, struct Car currCar){
    if(origin == south) {
    SArray[SCount] = currCar;
    SCount++;
@@ -174,45 +94,8 @@ intersection_before_entry(Direction origin, Direction destination)
    WArray[WCount] = currCar;
    WCount++;
    }
-   lock_release(criticalSectionLock);
-}
-
-
-/*
- * The simulation driver will call this function each time a vehicle
- * leaves the intersection.
- *
- * parameters:
- *    * origin: the Direction from which the vehicle arrived
- *    * destination: the Direction in which the vehicle is going
- *
- * return value: none
- */
-
-void
-intersection_after_exit(Direction origin, Direction destination) 
-{
-  KASSERT(northcv != NULL);
-  KASSERT(southcv != NULL);
-  KASSERT(eastcv != NULL);
-  KASSERT(westcv != NULL);
-  lock_acquire(criticalSectionLock);
-	if(trafficDirection == south){
-	 cv_signal(westcv,criticalSectionLock);
-	 cv_wait(southcv,criticalSectionLock);
-	}
-	else if(trafficDirection == north){
-	cv_signal(eastcv,criticalSectionLock);
-	cv_wait(northcv,criticalSectionLock);
-	}
-	else if(trafficDirection == east){
-	cv_signal(southcv, criticalSectionLock);
-	cv_wait(eastcv, criticalSectionLock);
-	}
-	else{
-	cv_signal(northcv,criticalSectionLock);
-	cv_wait(westcv,criticalSectionLock);
-	}
+ }
+ void remove_array(Direction origin, Direction destination){
 	if(origin == north){
 	for(int i = 0; i < NCount; ++i){
 	if(NArray[i].origin == origin && NArray[i].destination == destination){
@@ -249,6 +132,164 @@ intersection_after_exit(Direction origin, Direction destination)
 		}
 		WCount--;
 		break;}}}
-  lock_release(criticalSectionLock);
+ }
+ void wait_at_intersection(void){
+   if(trafficDirection == south){
+   cv_wait(northcv,criticalSectionLock);
+   cv_wait(eastcv, criticalSectionLock);
+   cv_wait(westcv, criticalSectionLock);
+   }
+   else if(trafficDirection == north){
+   cv_wait(eastcv, criticalSectionLock);
+   cv_wait(westcv, criticalSectionLock);
+   cv_wait(southcv, criticalSectionLock);
+   }
+   else if(trafficDirection == east){
+   cv_wait(northcv, criticalSectionLock);
+   cv_wait(westcv, criticalSectionLock);
+   cv_wait(southcv, criticalSectionLock);
+   }
+   else{
+   cv_wait(eastcv, criticalSectionLock);
+   cv_wait(northcv, criticalSectionLock);
+   cv_wait(southcv, criticalSectionLock);
+   }
+ }
+void
+intersection_sync_init(void)
+{
+  /* replace this default implementation with your own implementation */
 
+  criticalSectionLock= lock_create("intersectionLock");
+  if(criticalSectionLock == NULL){
+    panic("Could not create intersection Lock");
+  }
+  northcv = cv_create("North");
+  if(northcv == NULL){
+  panic("Could not create North Conditional Variable");
+  }
+  southcv = cv_create("South");
+  if(southcv == NULL){
+  panic("Could not create South Conditional Variable");
+  }
+  eastcv= cv_create("East");
+  if(eastcv == NULL){
+  panic("Could not create East Conditional Variable");
+  }
+  westcv = cv_create("West");
+  if(westcv == NULL){
+  panic("Could not create West Conditional Variable");
+  }
+  return;
+  NCount = 0;
+  ECount = 0;
+  WCount = 0;
+  SCount = 0;
+  trafficDirection = south;
+}
+
+
+/* 
+ * The simulation driver will call this function once after
+ * the simulation has finished
+ *
+ * You can use it to clean up any synchronization and other variables.
+ *
+ */
+void
+intersection_sync_cleanup(void)
+{
+  /* replace this default implementation with your own implementation */
+  KASSERT(criticalSectionLock != NULL);
+  KASSERT(northcv != NULL);
+  KASSERT(southcv != NULL);
+  KASSERT(eastcv != NULL);
+  KASSERT(westcv != NULL);
+  cv_destroy(northcv);
+  cv_destroy(southcv);
+  cv_destroy(eastcv);
+  cv_destroy(westcv);
+  lock_destroy(criticalSectionLock);
+}
+
+
+/*
+ * The simulation driver will call this function each time a vehicle
+ * tries to enter the intersection, before it enters.
+ * This function should cause the calling simulation thread 
+ * to block until it is OK for the vehicle to enter the intersection.
+ *
+ * parameters:
+ *    * origin: the Direction from which the vehicle is arriving
+ *    * destination: the Direction in which the vehicle is trying to go
+ *
+ * return value: none
+ */
+
+void
+intersection_before_entry(Direction origin, Direction destination) 
+{
+  /* replace this default implementation with your own implementation */
+  KASSERT(northcv != NULL);
+  KASSERT(southcv != NULL);
+  KASSERT(eastcv != NULL);
+  KASSERT(westcv != NULL);
+  lock_acquire(criticalSectionLock);
+   struct Car currCar;
+   currCar.origin = origin;
+   currCar.destination = destination;
+   if(NCount == 0 && SCount == 0 && ECount == 0 && WCount == 0){
+   add_array(origin,currCar);
+   }
+   else{
+   wait_at_intersection();
+   add_array(origin,currCar);
+   }
+   lock_release(criticalSectionLock);
+}
+
+
+/*
+ * The simulation driver will call this function each time a vehicle
+ * leaves the intersection.
+ *
+ * parameters:
+ *    * origin: the Direction from which the vehicle arrived
+ *    * destination: the Direction in which the vehicle is going
+ *
+ * return value: none
+ */
+
+void
+intersection_after_exit(Direction origin, Direction destination) 
+{
+  KASSERT(northcv != NULL);
+  KASSERT(southcv != NULL);
+  KASSERT(eastcv != NULL);
+  KASSERT(westcv != NULL);
+  lock_acquire(criticalSectionLock);
+  if(no_cars_in_intersection()){
+	change_direction(trafficDirection);
+  }
+  else{
+	if(trafficDirection == south){
+	 cv_signal(westcv,criticalSectionLock);
+	 cv_wait(southcv,criticalSectionLock);
+	}
+	else if(trafficDirection == north){
+	cv_signal(eastcv,criticalSectionLock);
+	cv_wait(northcv,criticalSectionLock);
+	}
+	else if(trafficDirection == east){
+	cv_signal(southcv, criticalSectionLock);
+	cv_wait(eastcv, criticalSectionLock);
+	}
+	else{
+	cv_signal(northcv,criticalSectionLock);
+	cv_wait(westcv,criticalSectionLock);
+	}
+	change_direction(trafficDirection);
+	}
+  remove_array(origin, destination);
+  lock_release(criticalSectionLock);
 }
