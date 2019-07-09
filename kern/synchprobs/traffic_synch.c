@@ -27,24 +27,15 @@ Direction destination;
 };
 
 static struct lock *criticalSectionLock;
-static struct cv *northcv;
-static struct cv *southcv;
-static struct cv *eastcv;
-static struct cv *westcv;
-static struct Car EArray[10];
-static struct Car WArray[10];
-static struct Car NArray[10];
-static struct Car SArray[10];
-static int ECount;
-static int WCount;
-static int NCount;
-static int SCount;
-static Direction trafficDirection;
-void add_array(Direction origin, struct Car currCar);
-void wait_at_intersection(void);
-void remove_array(Direction origin, Direction destination);
-bool no_cars_in_intersection(void);
-void change_direction(Direction trafficDirection);
+static struct cv *buffer;
+static struct Car *carArray;
+static int carCount;
+bool right_turn(struct Car car);
+bool right_turn_condition(struct Car carA, struct Car carB);
+bool same_direction(struct Car carA, struct Car carB);
+bool opposite_direction(struct Car carA, struct Car carB);
+bool not_safe_to_enter(struct Car car);
+
 /* 
  * The simulation driver will call this function once before starting
  * the simulation
@@ -52,109 +43,35 @@ void change_direction(Direction trafficDirection);
  * You can use it to initialize synchronization and other variables.
  * 
  */
- bool no_cars_in_intersection(void){
- bool noEast = ECount == 0;
- bool noWest = WCount == 0;
- bool noNorth = NCount == 0;
- bool noSouth = SCount ==0;
- if((noEast && noWest && noNorth) || (noEast && noWest && noSouth) || (noEast && noNorth && noSouth) || (noWest && noNorth && noSouth)){
- return true;
+bool right_turn(struct Car car){
+if((car.origin == north && car.destination == west) || 
+(car.origin == south && car.destination == east) || 
+(car.origin == west && car.destination == south) ||
+(car.origin == east && car.destination == north)){
+return true;
 }
 return false;
- }
- void change_direction(Direction trafficDirection){
- 
-	if(trafficDirection == south){
-	 trafficDirection = west;
-	}
-	else if(trafficDirection == north){
-	trafficDirection = east;
-	}
-	else if(trafficDirection == east){
-	trafficDirection = south;
-	}
-	else{
-	trafficDirection = north;
-	}
- }
- void add_array(Direction origin, struct Car currCar){
-   if(origin == south) {
-   SArray[SCount] = currCar;
-   SCount++;
-   }
-   else if(origin == north){
-   NArray[NCount] = currCar;
-   NCount++;
-   }
-   else if(origin == east){
-   EArray[ECount] = currCar;
-   ECount++;
-   }
-   else { 
-   WArray[WCount] = currCar;
-   WCount++;
-   }
- }
- void remove_array(Direction origin, Direction destination){
-	if(origin == north){
-	for(int i = 0; i < NCount; ++i){
-	if(NArray[i].origin == origin && NArray[i].destination == destination){
-		NArray[NCount] = NArray[i];
-		for(int j = i; j < NCount; ++j){
-		NArray[j] = NArray[j+1];
-		}
-		NCount--;
-		break;}}}
-	else if(origin == south){
-	for(int i = 0; i < SCount; ++i){
-	if(SArray[i].origin == origin && SArray[i].destination == destination){
-		SArray[SCount] = SArray[i];
-		for(int j = i; j < SCount; ++j){
-		SArray[j] = SArray[j+1];
-		}
-		SCount--;
-		break;}}}
-	else if(origin == east){
-	for(int i = 0; i < ECount; ++i){
-	if(EArray[i].origin == origin && EArray[i].destination == destination){
-		EArray[ECount] = EArray[i];
-		for(int j = i; j < ECount; ++j){
-		EArray[j] = EArray[j+1];
-		}
-		ECount--;
-		break;}}}
-	else{
-	for(int i = 0; i < WCount; ++i){
-	if(WArray[i].origin == origin && WArray[i].destination == destination){
-		WArray[WCount] = WArray[i];
-		for(int j = i; j < WCount; ++j){
-		WArray[j] = WArray[j+1];
-		}
-		WCount--;
-		break;}}}
- }
- void wait_at_intersection(void){
-   if(trafficDirection == south){
-   cv_wait(northcv,criticalSectionLock);
-   cv_wait(eastcv, criticalSectionLock);
-   cv_wait(westcv, criticalSectionLock);
-   }
-   else if(trafficDirection == north){
-   cv_wait(eastcv, criticalSectionLock);
-   cv_wait(westcv, criticalSectionLock);
-   cv_wait(southcv, criticalSectionLock);
-   }
-   else if(trafficDirection == east){
-   cv_wait(northcv, criticalSectionLock);
-   cv_wait(westcv, criticalSectionLock);
-   cv_wait(southcv, criticalSectionLock);
-   }
-   else{
-   cv_wait(eastcv, criticalSectionLock);
-   cv_wait(northcv, criticalSectionLock);
-   cv_wait(southcv, criticalSectionLock);
-   }
- }
+}
+bool right_turn_condition(struct Car carA, struct Car carB){
+if((right_turn(carA) || right_turn(carB)) && carA.destination != carB.destination) return true;
+return false;
+}
+bool same_direction(struct Car carA, struct Car carB){
+if(carA.origin == carB.origin)return true;
+return false;
+}
+bool opposite_direction(struct Car carA, struct Car carB){
+if(carA.origin == carB.destination && carA.destination == carB.origin) return true;
+return false;
+}
+bool not_safe_to_enter(struct Car car){
+for(int i = 0; i < carCount; ++i){
+if(!same_direction(car, carArray[i]) && 
+!opposite_direction(car,carArray[i]) &&
+!right_turn_condition(car,carArray[i])) return true;
+}
+return false;
+}
 void
 intersection_sync_init(void)
 {
@@ -164,28 +81,12 @@ intersection_sync_init(void)
   if(criticalSectionLock == NULL){
     panic("Could not create intersection Lock");
   }
-  northcv = cv_create("North");
-  if(northcv == NULL){
-  panic("Could not create North Conditional Variable");
+  buffer = cv_create("Buffer");
+  if(buffer == NULL){
+  panic("Could not create Buffer Conditional Variable");
   }
-  southcv = cv_create("South");
-  if(southcv == NULL){
-  panic("Could not create South Conditional Variable");
-  }
-  eastcv= cv_create("East");
-  if(eastcv == NULL){
-  panic("Could not create East Conditional Variable");
-  }
-  westcv = cv_create("West");
-  if(westcv == NULL){
-  panic("Could not create West Conditional Variable");
-  }
-  return;
-  NCount = 0;
-  ECount = 0;
-  WCount = 0;
-  SCount = 0;
-  trafficDirection = south;
+  carArray = kmalloc(sizeof(struct Car));
+  carCount = 0;
 }
 
 
@@ -201,15 +102,10 @@ intersection_sync_cleanup(void)
 {
   /* replace this default implementation with your own implementation */
   KASSERT(criticalSectionLock != NULL);
-  KASSERT(northcv != NULL);
-  KASSERT(southcv != NULL);
-  KASSERT(eastcv != NULL);
-  KASSERT(westcv != NULL);
-  cv_destroy(northcv);
-  cv_destroy(southcv);
-  cv_destroy(eastcv);
-  cv_destroy(westcv);
+  KASSERT(buffer != NULL);
+  cv_destroy(buffer);
   lock_destroy(criticalSectionLock);
+  kfree(carArray);
 }
 
 
@@ -230,21 +126,17 @@ void
 intersection_before_entry(Direction origin, Direction destination) 
 {
   /* replace this default implementation with your own implementation */
-  KASSERT(northcv != NULL);
-  KASSERT(southcv != NULL);
-  KASSERT(eastcv != NULL);
-  KASSERT(westcv != NULL);
+  KASSERT(buffer != NULL);
   lock_acquire(criticalSectionLock);
+  // write Car. 
    struct Car currCar;
    currCar.origin = origin;
    currCar.destination = destination;
-   if(NCount == 0 && SCount == 0 && ECount == 0 && WCount == 0){
-   add_array(origin,currCar);
+   while(not_safe_to_enter(currCar)){
+   cv_wait(buffer, criticalSectionLock);
    }
-   else{
-   wait_at_intersection();
-   add_array(origin,currCar);
-   }
+   carArray[carCount] = currCar; 
+   ++carCount;
    lock_release(criticalSectionLock);
 }
 
@@ -263,33 +155,17 @@ intersection_before_entry(Direction origin, Direction destination)
 void
 intersection_after_exit(Direction origin, Direction destination) 
 {
-  KASSERT(northcv != NULL);
-  KASSERT(southcv != NULL);
-  KASSERT(eastcv != NULL);
-  KASSERT(westcv != NULL);
+  KASSERT(buffer != NULL);
   lock_acquire(criticalSectionLock);
-  if(no_cars_in_intersection()){
-	change_direction(trafficDirection);
+  for(int i = 0; i < carCount; ++i){
+  if(carArray[i].origin == origin && carArray[i].destination == destination){
+	for(int j = i; j < carCount-1; ++j){
+	carArray[j] = carArray[j+1];
+	}
+	--carCount;
+	break;
   }
-  else{
-	if(trafficDirection == south){
-	 cv_signal(westcv,criticalSectionLock);
-	 cv_wait(southcv,criticalSectionLock);
-	}
-	else if(trafficDirection == north){
-	cv_signal(eastcv,criticalSectionLock);
-	cv_wait(northcv,criticalSectionLock);
-	}
-	else if(trafficDirection == east){
-	cv_signal(southcv, criticalSectionLock);
-	cv_wait(eastcv, criticalSectionLock);
-	}
-	else{
-	cv_signal(northcv,criticalSectionLock);
-	cv_wait(westcv,criticalSectionLock);
-	}
-	change_direction(trafficDirection);
-	}
-  remove_array(origin, destination);
+  }
+  cv_signal(buffer,criticalSectionLock);
   lock_release(criticalSectionLock);
 }

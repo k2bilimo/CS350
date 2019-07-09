@@ -38,13 +38,24 @@
 
 #include <spinlock.h>
 #include <thread.h> /* required for struct threadarray */
-
 struct addrspace;
 struct vnode;
 #ifdef UW
 struct semaphore;
 #endif // UW
 
+struct waitpidresult{
+int exitStatus;
+int result;
+};
+
+struct skeleton{
+pid_t pid;
+struct proc *parent;
+bool terminated;
+struct wchan *procWchan;
+struct waitpidresult waitPidResult;
+};
 /*
  * Process structure.
  */
@@ -69,6 +80,21 @@ struct proc {
 #endif
 
 	/* add more material here as needed */
+	/*Need to implement additional fields for processes. Need to add:
+	PID -> pid_t
+	List of children -> dynamic array of children
+	Parent -> pointer process. 
+	CV to put parent on sleep for waitPID -> condition variable
+	Associated lock with that CV -> Lock
+	check if a process has terminated or not -> Bool
+	a structure that returns both exit code and exit status: -> struct ProcExitInfo
+	*/
+	pid_t pid;
+	struct array *childProcs;
+	struct proc *parent;
+	struct trapframe *tf;
+	struct waitpidresult waitPidResult;
+	bool terminated; 
 };
 
 /* This is the process structure for the kernel and for kernel-only threads. */
@@ -100,5 +126,11 @@ struct addrspace *curproc_getas(void);
 /* Change the address space of the current process, and return the old one. */
 struct addrspace *curproc_setas(struct addrspace *);
 
-
+// Sets the process' PID
+int createProcessPid(pid_t *retval);
+int deletePid(pid_t procPid);
+int addChild(struct proc *parent, struct proc *child);
+void addProc(struct proc *proc);
+void removeParent(pid_t pid);
+void removeProc(pid_t pid);
 #endif /* _PROC_H_ */

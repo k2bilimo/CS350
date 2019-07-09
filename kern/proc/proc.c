@@ -49,8 +49,10 @@
 #include <vnode.h>
 #include <vfs.h>
 #include <synch.h>
-#include <kern/fcntl.h>  
-
+#include <kern/fcntl.h> 
+#include <kern/errno.h>
+#include <kern/limits.h>
+#include <wchan.h>
 /*
  * The process for the kernel; this holds all the kernel-only threads.
  */
@@ -66,7 +68,15 @@ static volatile unsigned int proc_count;
 /* it would be better to use a lock here, but we use a semaphore because locks are not implemented in the base kernel */ 
 static struct semaphore *proc_count_mutex;
 /* used to signal the kernel menu thread when there are no processes */
-struct semaphore *no_proc_sem;   
+struct semaphore *no_proc_sem;
+// Array of 64 integers for the PID. at most 64 will be used. 0 indicates that no process has that PID.
+// 1 indicates a process is using that PID. 
+int pidArray[64] = {0};
+// Array of 64 process pointers, when a parent gets removed we have access to all children to change their parent value. 
+struct proc *procArray[64] = {NULL}; 
+// A lock for the pidArray so that we can write it safely. 
+struct lock *pidArrayLock;
+struct lock *procArrayLock;
 #endif  // UW
 
 
@@ -102,7 +112,7 @@ proc_create(const char *name)
 #ifdef UW
 	proc->console = NULL;
 #endif // UW
-
+	proc->terminated = false;
 	return proc;
 }
 
@@ -162,10 +172,22 @@ proc_destroy(struct proc *proc)
 	  vfs_close(proc->console);
 	}
 #endif // UW
-
+	proc->parent = NULL;
+	proc->terminated = true;
+spinlock_acquire(&proc->p_lock);
+	for(int i = array_num(proc->childProcs)-1; i>=0; i--){
+		struct skeleton *arrProc = (struct skeleton*) array_get(proc->childProcs,i);
+		arrProc->parent = NULL;
+		removeParent(arrProc->pid);
+		kfree(arrProc);
+		array_remove(proc->childProcs,i);
+	}
+	removeProc(proc->pid);
+	spinlock_release(&proc->p_lock);
 	threadarray_cleanup(&proc->p_threads);
 	spinlock_cleanup(&proc->p_lock);
-
+	array_destroy(proc->childProcs);
+	kfree(proc->tf);
 	kfree(proc->p_name);
 	kfree(proc);
 
@@ -207,6 +229,14 @@ proc_bootstrap(void)
   if (no_proc_sem == NULL) {
     panic("could not create no_proc_sem semaphore\n");
   }
+ pidArrayLock = lock_create("pid_array_lock");
+ if(pidArrayLock == NULL){
+	panic("Could not create pidArrayLock");
+ }
+ procArrayLock = lock_create("proc_array_lock");
+ if(procArrayLock == NULL){
+	panic("Could not create procArrayLock");
+ }
 #endif // UW 
 }
 
@@ -270,7 +300,12 @@ proc_create_runprogram(const char *name)
 	proc_count++;
 	V(proc_count_mutex);
 #endif // UW
-
+	
+	proc->childProcs = array_create();
+	proc->pid = -1;
+	proc->tf = NULL;
+	proc->parent = NULL;
+	proc->terminated = false;
 	return proc;
 }
 
@@ -363,4 +398,74 @@ curproc_setas(struct addrspace *newas)
 	proc->p_addrspace = newas;
 	spinlock_release(&proc->p_lock);
 	return oldas;
+}
+int createProcessPid(pid_t *retval){
+lock_acquire(pidArrayLock); // editing pidArray, so we require the lock.
+// Go through array from 0 to 63, and then look for the first vacant value.
+int firstVacant = -1;
+
+	for(int i = 0; i < 64; ++i){
+	
+		if(pidArray[i] == 0){
+		firstVacant = i;
+		pidArray[i] = 1;
+		break;
+		}
+		}
+	if(firstVacant == -1){
+	// there's no space in our pid_array
+	lock_release(pidArrayLock);
+	return ENOMEM;
+	}
+// we have the first vacant address, add _PIDMIN to that to get unique PID value. 
+	pid_t newPid = __PID_MIN + firstVacant; 
+	*retval = newPid;
+	lock_release(pidArrayLock);
+	return 0; // no error
+}
+int deletePid(pid_t procPid){
+// editing a value in our pidArray, we require the lock.
+	lock_acquire(pidArrayLock);
+// we see that procPid = i + PID_MIN. hence i = procPid - PID_MIN. we write that bit to 0
+	if(pidArray[procPid - __PID_MIN] == 1){
+	pidArray[procPid - __PID_MIN] = 0;
+	}
+	else{
+	lock_release(pidArrayLock);
+	return ESRCH; // no process existed with this pid.
+	}
+	lock_release(pidArrayLock);
+	removeProc(procPid);
+	return 0;
+}
+int addChild(struct proc *parent, struct proc *child){
+spinlock_acquire(&parent->p_lock);
+// Deep Copy 
+struct skeleton *skeletonProc = kmalloc(sizeof (struct skeleton));
+if(skeletonProc == NULL) return ENOMEM;
+skeletonProc->parent = parent;
+skeletonProc->terminated = false;
+skeletonProc->pid = child->pid;
+skeletonProc->procWchan = wchan_create("waitPid wchan");
+array_add(parent->childProcs, (void *) skeletonProc, NULL);
+spinlock_release(&parent->p_lock);
+return 0;
+}
+void addProc(struct proc *proc){
+lock_acquire(procArrayLock);
+procArray[proc->pid - __PID_MIN] = proc;
+lock_release(procArrayLock);
+}
+void removeParent(pid_t pid){
+lock_acquire(procArrayLock);
+struct proc *p = procArray[pid - __PID_MIN];
+if(p){
+p->parent = NULL;
+}
+lock_release(procArrayLock);
+}
+void removeProc(pid_t pid){
+lock_acquire(procArrayLock);
+procArray[pid - __PID_MIN] = NULL;
+lock_release(procArrayLock);
 }
